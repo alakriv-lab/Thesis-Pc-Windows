@@ -1,0 +1,5 @@
+venv/
+build/
+.flet/
+__pycache__/
+*.db
