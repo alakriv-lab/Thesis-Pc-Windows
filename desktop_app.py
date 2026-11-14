@@ -183,10 +183,10 @@ class ApiWorker(QThread):
 
     def run(self):
         try:
-            metrics = requests.get("http://localhost:8001/api/live-metrics", timeout=4).json()
-            predictions = requests.get("http://localhost:8001/api/predict-live", timeout=4).json()
-            news = requests.get("http://localhost:8001/api/live-news", timeout=4).json()
-            lagged = requests.get("http://localhost:8001/api/lagged-correlation", timeout=4).json()
+            metrics = requests.get("https://crypto-thesis-pc-backend.onrender.com/api/live-metrics", timeout=4).json()
+            predictions = requests.get("https://crypto-thesis-pc-backend.onrender.com/api/predict-live", timeout=4).json()
+            news = requests.get("https://crypto-thesis-pc-backend.onrender.com/api/live-news", timeout=4).json()
+            lagged = requests.get("https://crypto-thesis-pc-backend.onrender.com/api/lagged-correlation", timeout=4).json()
             self.data_fetched.emit(metrics, predictions, news, lagged)
         except Exception:
             self.data_fetched.emit({}, {}, {}, {})
@@ -204,7 +204,7 @@ class WebSocketWorker(QThread):
             return
 
         async def listen():
-            url = "ws://localhost:8001/ws/crypto-stream"
+            url = "wss://crypto-thesis-pc-backend.onrender.com/ws/crypto-stream"
             while True:
                 try:
                     async with websockets.connect(url) as ws:

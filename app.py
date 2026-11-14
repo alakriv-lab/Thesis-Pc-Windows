@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, Column, Integer, Float, String, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -301,6 +302,15 @@ def simulated_sentiment_analysis(title):
 # 7. FASTAPI APP & ENDPOINTS
 # ==========================================
 app = FastAPI(title="Crypto AI Live Pipeline API with Ensemble Forecasting", version="7.0")
+
+# --- RENDER CORS SETUP ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Επιτρέπει στο PC Frontend (main.py) να συνδεθεί ελεύθερα
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.on_event("startup")
@@ -641,4 +651,8 @@ def get_live_news_feed():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    # --- RENDER PORT SETUP ---
+    # Το Render αναθέτει δική του θύρα δυναμικά.
+    # Χρησιμοποιούμε την os.environ.get("PORT") για να μην κρασάρει η πλατφόρμα.
+    port = int(os.environ.get("PORT", 8001))
+    uvicorn.run(app, host="0.0.0.0", port=port)
