@@ -262,13 +262,13 @@ def format_time_ago(timestamp):
     if diff <= 0:
         return "Just now"
     if diff < 3600:
-        mins = int(max(1, diff // 60))
+        mins = int(max(1, diff / 60))
         return f"{mins} mins ago" if mins > 1 else "1 min ago"
     elif diff < 86400:
-        hours = int(diff // 3600)
+        hours = int(diff / 3600)
         return f"{hours} hours ago" if hours > 1 else "1 hour ago"
     else:
-        days = int(diff // 86400)
+        days = int(diff / 86400)
         return f"{days} days ago" if days > 1 else "1 day ago"
 
 
@@ -295,7 +295,7 @@ def simulated_sentiment_analysis(title):
         return score, "Bearish 🔴", f"-{impact:.2f}%", "#ef4444"
     else:
         impact = max(0.01, abs(score) * 0.8)
-        return score, "Neutral 🟡", f"{impact:+.2f}%", "#62677d"
+        return score, "Neutral 🟡", f"+{impact:.2f}%", "#62677d"
 
 
 # ==========================================
@@ -303,10 +303,9 @@ def simulated_sentiment_analysis(title):
 # ==========================================
 app = FastAPI(title="Crypto AI Live Pipeline API with Ensemble Forecasting", version="7.0")
 
-# --- RENDER CORS SETUP ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Επιτρέπει στο PC Frontend (main.py) να συνδεθεί ελεύθερα
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -377,7 +376,7 @@ def get_live_metrics():
                 "fear_greed_index": fng_val,
                 "fear_greed_class": fng_class,
                 "finbert_sentiment_score": 0.15,
-                "extracted_entities": "Bitcoin, Ethereum, SEC, Market Volatility"
+                "extracted_entities": ["Bitcoin", "Ethereum", "SEC", "Market Volatility"]
             }
         }
     except Exception as e:
@@ -407,45 +406,57 @@ def predict_live():
     scaled_X = scaler_X.transform(raw_features)
     input_tensor = torch.tensor(scaled_X, dtype=torch.float32)
 
-    # 1. Transformer Model (#1 Weight: 60%)
+    # 1. Transformer Model (#1 Weight 60%)
     with torch.no_grad():
         trans_pred_scaled = transformer_model(input_tensor).numpy()
-    trans_btc_target, trans_eth_target = convert_log_return_to_usd(trans_pred_scaled, btc_close, eth_close)
 
-    # 2. Advanced LSTM Model (#2 Weight: 40%)
+    # 2. Advanced LSTM Model (#2 Weight 40%)
     with torch.no_grad():
         lstm_pred_scaled = lstm_model(input_tensor).numpy()
-    lstm_btc_target, lstm_eth_target = convert_log_return_to_usd(lstm_pred_scaled, btc_close, eth_close)
 
-    # 3. ENSEMBLE FORECASTING (WEIGHTED AVERAGE: 60% Trans + 40% LSTM)
+    # 3. ENSEMBLE FORECASTING (Συνδυασμός 60/40 στο SCALED επίπεδο ΠΡΙΝ το Inverse Transform)
     w_trans, w_lstm = 0.60, 0.40
-    ens_btc_target = round(w_trans * trans_btc_target + w_lstm * lstm_btc_target, 2)
-    ens_eth_target = round(w_trans * trans_eth_target + w_lstm * lstm_eth_target, 2)
+    ens_pred_scaled = (w_trans * trans_pred_scaled) + (w_lstm * lstm_pred_scaled)
 
-    # Signal & Confidence calculation
-    trans_btc_bull = trans_btc_target > btc_close
-    lstm_btc_bull = lstm_btc_target > btc_close
-    if trans_btc_bull and lstm_btc_bull:
+    # Μετατροπή όλων σε ρεαλιστικές τιμές (USD)
+    trans_btc_target, trans_eth_target = convert_log_return_to_usd(trans_pred_scaled, btc_close, eth_close)
+    lstm_btc_target, lstm_eth_target = convert_log_return_to_usd(lstm_pred_scaled, btc_close, eth_close)
+    ens_btc_target, ens_eth_target = convert_log_return_to_usd(ens_pred_scaled, btc_close, eth_close)
+
+    # --- 4. ΔΥΝΑΜΙΚΟΣ ΥΠΟΛΟΓΙΣΜΟΣ SIGNALS & CONFIDENCE (BTC) ---
+    btc_diff_pct = (ens_btc_target - btc_close) / btc_close
+
+    if btc_diff_pct > 0.002:
         ens_btc_signal = "STRONG BUY 🟢🟢"
-        ens_btc_conf = 94.5
-    elif not trans_btc_bull and not lstm_btc_bull:
+    elif btc_diff_pct < -0.002:
         ens_btc_signal = "STRONG SELL 🔴🔴"
-        ens_btc_conf = 92.0
     else:
-        ens_btc_signal = "NEUTRAL / MODERATE 🟡"
-        ens_btc_conf = 61.5
+        ens_btc_signal = "HOLD / NEUTRAL 🟡"
 
-    trans_eth_bull = trans_eth_target > eth_close
-    lstm_eth_bull = lstm_eth_target > eth_close
-    if trans_eth_bull and lstm_eth_bull:
-        ens_eth_signal = "STRONG BUY 🟢🟢"
-        ens_eth_conf = 93.8
-    elif not trans_eth_bull and not lstm_eth_bull:
-        ens_eth_signal = "STRONG SELL 🔴🔴"
-        ens_eth_conf = 91.2
+    # Έλεγχος αν Transformer και LSTM "συμφωνούν" για να δώσει μεγάλο Confidence
+    if (trans_btc_target > btc_close and lstm_btc_target > btc_close) or (
+            trans_btc_target < btc_close and lstm_btc_target < btc_close):
+        ens_btc_conf = 75.0 + min(abs(btc_diff_pct * 500), 20.0)
     else:
-        ens_eth_signal = "NEUTRAL / MODERATE 🟡"
-        ens_eth_conf = 59.0
+        ens_btc_conf = 45.0 + min(abs(btc_diff_pct * 300), 15.0)
+    ens_btc_conf = round(ens_btc_conf, 1)
+
+    # --- 5. ΔΥΝΑΜΙΚΟΣ ΥΠΟΛΟΓΙΣΜΟΣ SIGNALS & CONFIDENCE (ETH) ---
+    eth_diff_pct = (ens_eth_target - eth_close) / eth_close
+
+    if eth_diff_pct > 0.002:
+        ens_eth_signal = "STRONG BUY 🟢🟢"
+    elif eth_diff_pct < -0.002:
+        ens_eth_signal = "STRONG SELL 🔴🔴"
+    else:
+        ens_eth_signal = "HOLD / NEUTRAL 🟡"
+
+    if (trans_eth_target > eth_close and lstm_eth_target > eth_close) or (
+            trans_eth_target < eth_close and lstm_eth_target < eth_close):
+        ens_eth_conf = 75.0 + min(abs(eth_diff_pct * 500), 20.0)
+    else:
+        ens_eth_conf = 45.0 + min(abs(eth_diff_pct * 300), 15.0)
+    ens_eth_conf = round(ens_eth_conf, 1)
 
     return {
         "status": "Success",
@@ -453,15 +464,15 @@ def predict_live():
         "predictions": {
             "transformer_attention": {
                 "BTC_target": trans_btc_target,
-                "BTC_signal": "BUY 🟢" if trans_btc_bull else "SELL 🔴",
+                "BTC_signal": "BUY 🟢" if trans_btc_target > btc_close else "SELL 🔴",
                 "ETH_target": trans_eth_target,
-                "ETH_signal": "BUY 🟢" if trans_eth_bull else "SELL 🔴"
+                "ETH_signal": "BUY 🟢" if trans_eth_target > eth_close else "SELL 🔴"
             },
             "lstm_deep_learning": {
                 "BTC_target": lstm_btc_target,
-                "BTC_signal": "BUY 🟢" if lstm_btc_bull else "SELL 🔴",
+                "BTC_signal": "BUY 🟢" if lstm_btc_target > btc_close else "SELL 🔴",
                 "ETH_target": lstm_eth_target,
-                "ETH_signal": "BUY 🟢" if lstm_eth_bull else "SELL 🔴"
+                "ETH_signal": "BUY 🟢" if lstm_eth_target > eth_close else "SELL 🔴"
             },
             "ensemble_consensus": {
                 "BTC_target": ens_btc_target,
@@ -651,8 +662,7 @@ def get_live_news_feed():
 
 if __name__ == "__main__":
     import uvicorn
-    # --- RENDER PORT SETUP ---
+
     # Το Render αναθέτει δική του θύρα δυναμικά.
-    # Χρησιμοποιούμε την os.environ.get("PORT") για να μην κρασάρει η πλατφόρμα.
     port = int(os.environ.get("PORT", 8001))
     uvicorn.run(app, host="0.0.0.0", port=port)
