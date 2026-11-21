@@ -1,4 +1,5 @@
 import sys
+import time
 import json
 import requests
 import asyncio
@@ -174,21 +175,50 @@ QScrollBar::handle:vertical {
 }
 """
 
+BASE_URL = "https://crypto-thesis-pc-backend.onrender.com"
+
 
 # ==========================================
 # 1. THREAD WORKERS
 # ==========================================
 class ApiWorker(QThread):
     data_fetched = pyqtSignal(dict, dict, dict, dict)
+    status_update = pyqtSignal(str)
 
     def run(self):
         try:
-            metrics = requests.get("https://crypto-thesis-pc-backend.onrender.com/api/live-metrics", timeout=4).json()
-            predictions = requests.get("https://crypto-thesis-pc-backend.onrender.com/api/predict-live", timeout=4).json()
-            news = requests.get("https://crypto-thesis-pc-backend.onrender.com/api/live-news", timeout=4).json()
-            lagged = requests.get("https://crypto-thesis-pc-backend.onrender.com/api/lagged-correlation", timeout=4).json()
+            # 1. Wake-up request (μεγάλο timeout + retry για cold start του Render)
+            self.status_update.emit("⏳ Waking Render...")
+            metrics = None
+            for attempt in range(3):
+                try:
+                    resp = requests.get(f"{BASE_URL}/api/live-metrics", timeout=90)
+                    if resp.status_code == 200:
+                        metrics = resp.json()
+                        break
+                    # Αν το Render επιστρέψει 502/503 όσο ξεκινάει, περίμενε λίγο και ξαναδοκίμασε
+                    self.status_update.emit(f"⏳ Starting Server ({attempt + 1}/3)...")
+                    time.sleep(5)
+                except requests.exceptions.RequestException:
+                    if attempt < 2:
+                        self.status_update.emit(f"⏳ Retrying ({attempt + 1}/3)...")
+                        time.sleep(5)
+                    else:
+                        raise
+
+            if not metrics:
+                self.data_fetched.emit({}, {}, {}, {})
+                return
+
+            # 2. Ο server είναι πλέον ξύπνιος -> φέρε τα υπόλοιπα δεδομένα
+            self.status_update.emit("🔄 Syncing Models & News...")
+            predictions = requests.get(f"{BASE_URL}/api/predict-live", timeout=30).json()
+            news = requests.get(f"{BASE_URL}/api/live-news", timeout=30).json()
+            lagged = requests.get(f"{BASE_URL}/api/lagged-correlation", timeout=30).json()
+
             self.data_fetched.emit(metrics, predictions, news, lagged)
-        except Exception:
+        except Exception as e:
+            print(f"[ApiWorker Error]: {e}")
             self.data_fetched.emit({}, {}, {}, {})
 
 
@@ -216,7 +246,7 @@ class WebSocketWorker(QThread):
                             self.tick_received.emit(data)
                 except Exception:
                     self.connection_status.emit(False)
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(3)
 
         asyncio.run(listen())
 
@@ -534,12 +564,16 @@ class LinearCryptoApp(QMainWindow):
         self.ws_worker.start()
 
     def fetch_api_data(self):
-        self.btn_refresh.setText("Syncing...")
+        self.btn_refresh.setText("⏳ Waking Render...")
         self.btn_refresh.setEnabled(False)
 
         self.worker = ApiWorker()
+        self.worker.status_update.connect(self.on_sync_status_update)
         self.worker.data_fetched.connect(self.on_data_received)
         self.worker.start()
+
+    def on_sync_status_update(self, text):
+        self.btn_refresh.setText(text)
 
     def on_live_tick(self, tick_data):
         if tick_data.get("type") == "TICK_UPDATE":
@@ -669,7 +703,7 @@ class LinearCryptoApp(QMainWindow):
         self.btn_refresh.setEnabled(True)
 
         if not metrics or not predictions:
-            self.card_btc.update_data("Offline", "Run app.py server", "#ef4444")
+            self.card_btc.update_data("Offline", "Render waking up - Retry Sync", "#ef4444")
             return
 
         btc = metrics['bitcoin']
